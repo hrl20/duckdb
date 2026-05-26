@@ -155,6 +155,11 @@ public:
 	void AddContext(BindContext other);
 	//! For semi and anti joins we remove the binding context of the right table after binding the condition.
 	void RemoveContext(const vector<BindingAlias> &aliases);
+	//! Extract bindings matching the given aliases, removing them from this context.
+	//! Returns the extracted bindings so they can be restored later with AddBindings.
+	vector<unique_ptr<Binding>> ExtractBindings(const vector<BindingAlias> &aliases);
+	//! Restore previously extracted bindings.
+	void AddBindings(vector<unique_ptr<Binding>> bindings);
 
 	//! Gets a binding of the specified name. Returns a nullptr and sets the out_error if the binding could not be
 	//! found.

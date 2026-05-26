@@ -300,6 +300,17 @@ BoundStatement Binder::Bind(MergeIntoStatement &stmt) {
 		}
 	}
 
+	// collect source and target binding aliases (table-level) for scope restriction
+	// must be done before the binders are moved into the join
+	vector<BindingAlias> source_binding_aliases;
+	for (auto &binding_entry : source_binder->bind_context.GetBindingsList()) {
+		source_binding_aliases.push_back(binding_entry->GetBindingAlias());
+	}
+	vector<BindingAlias> target_binding_aliases;
+	for (auto &binding_entry : target_binder->bind_context.GetBindingsList()) {
+		target_binding_aliases.push_back(binding_entry->GetBindingAlias());
+	}
+
 	// bind the join between the source and target
 	// our conditions determine the join type we need
 	// if we have WHEN NOT MATCHED BY SOURCE we need all source rows -> RIGHT join
@@ -359,14 +370,31 @@ BoundStatement Binder::Bind(MergeIntoStatement &stmt) {
 	vector<unique_ptr<Expression>> projection_expressions;
 
 	for (auto &entry : stmt.actions) {
+		auto condition = entry.first;
+
+		// Per SQL standard, restrict column scope based on match condition:
+		// - WHEN NOT MATCHED BY TARGET: only source columns are in scope (no target row exists)
+		// - WHEN NOT MATCHED BY SOURCE: only target columns are in scope (no source row exists)
+		vector<unique_ptr<Binding>> extracted_bindings;
+		if (condition == MergeActionCondition::WHEN_NOT_MATCHED_BY_TARGET) {
+			extracted_bindings = bind_context.ExtractBindings(target_binding_aliases);
+		} else if (condition == MergeActionCondition::WHEN_NOT_MATCHED_BY_SOURCE) {
+			extracted_bindings = bind_context.ExtractBindings(source_binding_aliases);
+		}
+
 		vector<unique_ptr<BoundMergeIntoAction>> bound_actions;
 		for (auto &action : entry.second) {
-			CheckMergeAction(entry.first, action->action_type);
+			CheckMergeAction(condition, action->action_type);
 			bound_actions.push_back(BindMergeAction(*merge_into, table, get, proj_index, projection_expressions, root,
-			                                        *action, source_aliases, source_names, entry.first,
+			                                        *action, source_aliases, source_names, condition,
 			                                        source_table_indices));
 		}
-		merge_into->actions.emplace(entry.first, std::move(bound_actions));
+		merge_into->actions.emplace(condition, std::move(bound_actions));
+
+		// Restore bindings for subsequent action groups
+		if (!extracted_bindings.empty()) {
+			bind_context.AddBindings(std::move(extracted_bindings));
+		}
 	}
 
 	if (has_not_matched_by_source) {

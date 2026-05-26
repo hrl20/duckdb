@@ -797,4 +797,25 @@ void BindContext::RemoveContext(const vector<BindingAlias> &aliases) {
 	}
 }
 
+vector<unique_ptr<Binding>> BindContext::ExtractBindings(const vector<BindingAlias> &aliases) {
+	vector<unique_ptr<Binding>> result;
+	for (auto &alias : aliases) {
+		for (auto it = bindings_list.begin(); it != bindings_list.end();) {
+			if ((*it)->GetBindingAlias() == alias) {
+				result.push_back(std::move(*it));
+				it = bindings_list.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+	return result;
+}
+
+void BindContext::AddBindings(vector<unique_ptr<Binding>> bindings) {
+	for (auto &binding : bindings) {
+		AddBinding(std::move(binding));
+	}
+}
+
 } // namespace duckdb

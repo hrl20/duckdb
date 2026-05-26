@@ -1,0 +1,161 @@
+# name: test/sql/merge/merge_into_column_scope.test
+# description: Test that MERGE INTO correctly scopes columns per SQL standard
+# group: [merge]
+
+# Per the SQL standard, unqualified column names in MERGE actions should resolve
+# without ambiguity based on the match condition:
+# - WHEN NOT MATCHED BY TARGET: only source columns are in scope
+# - WHEN NOT MATCHED BY SOURCE: only target columns are in scope
+# - WHEN MATCHED: both source and target are in scope
+
+# -----------------------------------------------------------------------
+# WHEN NOT MATCHED BY TARGET: unqualified columns resolve to source
+# -----------------------------------------------------------------------
+
+statement ok
+CREATE TABLE tgt1(id INT PRIMARY KEY, val INT);
+
+statement ok
+INSERT INTO tgt1 VALUES (1, 10);
+
+# Both tables have 'id' and 'val' columns - should resolve to source without ambiguity
+statement ok
+MERGE INTO tgt1 AS t
+USING (VALUES (2, 99)) AS s(id, val)
+ON t.id = s.id
+WHEN NOT MATCHED BY TARGET THEN INSERT (id, val) VALUES (id, val);
+
+query II
+SELECT * FROM tgt1 ORDER BY id;
+----
+1	10
+2	99
+
+# Same test with INSERT VALUES (no column list)
+statement ok
+CREATE TABLE tgt2(id INT PRIMARY KEY, val INT);
+
+statement ok
+MERGE INTO tgt2 AS t
+USING (VALUES (1, 100)) AS s(id, val)
+ON t.id = s.id
+WHEN NOT MATCHED BY TARGET THEN INSERT VALUES (id, val);
+
+query II
+SELECT * FROM tgt2;
+----
+1	100
+
+# Unqualified columns in the condition also resolve to source
+statement ok
+CREATE TABLE tgt3(id INT PRIMARY KEY, val INT);
+
+statement ok
+MERGE INTO tgt3 AS t
+USING (VALUES (1, 100), (2, 5)) AS s(id, val)
+ON t.id = s.id
+WHEN NOT MATCHED BY TARGET AND val > 50 THEN INSERT VALUES (id, val);
+
+query II
+SELECT * FROM tgt3;
+----
+1	100
+
+# -----------------------------------------------------------------------
+# WHEN NOT MATCHED BY SOURCE: unqualified columns resolve to target
+# -----------------------------------------------------------------------
+
+statement ok
+CREATE TABLE tgt4(id INT PRIMARY KEY, val INT);
+
+statement ok
+INSERT INTO tgt4 VALUES (1, 10), (2, 20), (3, 30);
+
+# Unqualified 'val' in UPDATE SET should resolve to target
+statement ok
+MERGE INTO tgt4 AS t
+USING (VALUES (1, 99)) AS s(id, val)
+ON t.id = s.id
+WHEN MATCHED THEN DO NOTHING
+WHEN NOT MATCHED BY SOURCE THEN UPDATE SET val = val + 1;
+
+query II
+SELECT * FROM tgt4 ORDER BY id;
+----
+1	10
+2	21
+3	31
+
+# Unqualified columns in the condition also resolve to target
+statement ok
+CREATE TABLE tgt5(id INT PRIMARY KEY, val INT);
+
+statement ok
+INSERT INTO tgt5 VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+MERGE INTO tgt5 AS t
+USING (VALUES (1, 99)) AS s(id, val)
+ON t.id = s.id
+WHEN MATCHED THEN DO NOTHING
+WHEN NOT MATCHED BY SOURCE AND val > 15 THEN DELETE;
+
+query II
+SELECT * FROM tgt5 ORDER BY id;
+----
+1	10
+
+# -----------------------------------------------------------------------
+# WHEN MATCHED: both tables in scope, qualification required for ambiguity
+# -----------------------------------------------------------------------
+
+statement ok
+CREATE TABLE tgt6(id INT PRIMARY KEY, val INT);
+
+statement ok
+INSERT INTO tgt6 VALUES (1, 10);
+
+# Both tables have 'val' - must qualify to avoid ambiguity in WHEN MATCHED
+statement error
+MERGE INTO tgt6 AS t
+USING (VALUES (1, 99)) AS s(id, val)
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET val = val;
+----
+<REGEX>:Binder Error.*Ambiguous.*
+
+# Qualified references work fine
+statement ok
+MERGE INTO tgt6 AS t
+USING (VALUES (1, 99)) AS s(id, val)
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET val = s.val;
+
+query II
+SELECT * FROM tgt6;
+----
+1	99
+
+# -----------------------------------------------------------------------
+# Combined: multiple WHEN clauses with overlapping column names
+# -----------------------------------------------------------------------
+
+statement ok
+CREATE TABLE tgt7(id INT PRIMARY KEY, val INT);
+
+statement ok
+INSERT INTO tgt7 VALUES (1, 10), (3, 30);
+
+statement ok
+MERGE INTO tgt7 AS t
+USING (VALUES (1, 99), (2, 200)) AS s(id, val)
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET val = s.val
+WHEN NOT MATCHED BY TARGET THEN INSERT VALUES (id, val);
+
+query II
+SELECT * FROM tgt7 ORDER BY id;
+----
+1	99
+2	200
+3	30
